@@ -52,7 +52,7 @@ export interface AppState {
   activeRoomId: string | null
 }
 
-export const STEP_LABELS = ['户型', '常坐位置', '安装位置'] as const
+export const STEP_LABELS = ['户型选择', '户型布局', '覆盖选择', '系统方案', '确认调整'] as const
 
 export const UNIT_OPTIONS: { value: UnitType; label: string; rooms: number }[] = [
   { value: '1b1l', label: '一室一厅', rooms: 2 },

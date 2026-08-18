@@ -19,7 +19,7 @@ export function StepNav({ step, onJump }: StepNavProps) {
             onClick={() => onJump?.(n)}
             disabled={n > step}
           >
-            <span className="step-num">{String(n).padStart(2, '0')}</span>
+            <span className="step-num">{n}</span>
             <span className="step-text">{label}</span>
           </button>
         )

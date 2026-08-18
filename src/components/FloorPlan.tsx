@@ -1,6 +1,14 @@
 import { useRef, useState, type PointerEvent as REPointerEvent } from 'react'
 import type { DevicePlacement, Marker, Room } from '../types'
-import { PX_PER_M, magneticSnapPosition, resolveRoomPosition } from '../logic/placement'
+import {
+  CANVAS_MIN_H,
+  CANVAS_MIN_W,
+  PX_PER_M,
+  magneticResizeRoom,
+  magneticSnapPosition,
+  resolveRoomPosition,
+  type ResizeHandle,
+} from '../logic/placement'
 
 export type PlanMode =
   | 'layout'
@@ -24,8 +32,25 @@ interface FloorPlanProps {
   onMoveMarker?: (id: string, x: number, y: number) => void
   onMoveDevice?: (id: string, x: number, y: number) => void
   /** Fired when a marker/room/device drag ends */
-  onDragEnd?: (kind: 'room' | 'marker' | 'device') => void
+  onDragEnd?: (kind: 'room' | 'marker' | 'device' | 'resize') => void
 }
+
+type DragState =
+  | {
+      kind: 'room' | 'marker' | 'device'
+      id: string
+      ox: number
+      oy: number
+      startX: number
+      startY: number
+    }
+  | {
+      kind: 'resize'
+      id: string
+      handle: ResizeHandle
+    }
+
+const RESIZE_HANDLES: ResizeHandle[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
 
 export function FloorPlan({
   rooms,
@@ -42,19 +67,12 @@ export function FloorPlan({
   onDragEnd,
 }: FloorPlanProps) {
   const svgRef = useRef<SVGSVGElement>(null)
-  const [drag, setDrag] = useState<{
-    kind: 'room' | 'marker' | 'device'
-    id: string
-    ox: number
-    oy: number
-    startX: number
-    startY: number
-  } | null>(null)
+  const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef(drag)
   dragRef.current = drag
 
-  const maxX = Math.max(640, ...rooms.map((r) => r.x + r.length * PX_PER_M + 40))
-  const maxY = Math.max(420, ...rooms.map((r) => r.y + r.width * PX_PER_M + 40))
+  const maxX = Math.max(CANVAS_MIN_W, ...rooms.map((r) => r.x + r.length * PX_PER_M + 40))
+  const maxY = Math.max(CANVAS_MIN_H, ...rooms.map((r) => r.y + r.width * PX_PER_M + 40))
 
   function clientToSvg(e: { clientX: number; clientY: number }) {
     const svg = svgRef.current
@@ -99,6 +117,13 @@ export function FloorPlan({
     }
   }
 
+  function onPointerDownResize(e: REPointerEvent, room: Room, handle: ResizeHandle) {
+    e.stopPropagation()
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    onSelectRoom?.(room.id)
+    setDrag({ kind: 'resize', id: room.id, handle })
+  }
+
   function onPointerDownCoverBadge(e: REPointerEvent, room: Room) {
     e.stopPropagation()
     onSelectRoom?.(room.id)
@@ -118,18 +143,24 @@ export function FloorPlan({
     if (!drag) return
     const p = clientToSvg(e)
 
+    if (drag.kind === 'resize') {
+      if (!onRoomsChange) return
+      const room = rooms.find((r) => r.id === drag.id)
+      if (!room) return
+      const next = magneticResizeRoom(room, drag.handle, p.x, p.y, rooms)
+      onRoomsChange(rooms.map((r) => (r.id === drag.id ? { ...r, ...next } : r)))
+      return
+    }
+
     if (drag.kind === 'room') {
       if (!onRoomsChange) return
       const moving = rooms.find((r) => r.id === drag.id)
       if (!moving) return
-      const nextX = p.x - drag.ox
-      const nextY = p.y - drag.oy
       const tentative = {
         ...moving,
-        x: nextX,
-        y: nextY,
+        x: p.x - drag.ox,
+        y: p.y - drag.oy,
       }
-      // layout: free place; edit/plan: magnetic flush snap
       const resolved =
         mode === 'edit' || mode === 'plan'
           ? magneticSnapPosition(tentative, rooms)
@@ -158,7 +189,7 @@ export function FloorPlan({
     if (!current) return
     dragRef.current = null
     setDrag(null)
-    onDragEnd?.(current.kind)
+    onDragEnd?.(current.kind === 'resize' ? 'resize' : current.kind)
   }
 
   const showHatch = (room: Room) => {
@@ -168,6 +199,68 @@ export function FloorPlan({
   }
 
   const isEditing = mode === 'layout' || mode === 'edit' || mode === 'plan'
+  const canResize = mode === 'edit'
+  const showCoverageOff = mode === 'plan' || mode === 'cover' || mode === 'marker'
+
+  function handleGeometry(room: Room, handle: ResizeHandle) {
+    const w = room.length * PX_PER_M
+    const h = room.width * PX_PER_M
+    const cx = room.x + w / 2
+    const cy = room.y + h / 2
+    const edge = 28
+    const corner = 18
+
+    switch (handle) {
+      case 'n':
+        return { x: room.x, y: room.y - edge / 2, width: w, height: edge, kx: cx, ky: room.y, cursor: 'ns-resize' }
+      case 's':
+        return { x: room.x, y: room.y + h - edge / 2, width: w, height: edge, kx: cx, ky: room.y + h, cursor: 'ns-resize' }
+      case 'e':
+        return { x: room.x + w - edge / 2, y: room.y, width: edge, height: h, kx: room.x + w, ky: cy, cursor: 'ew-resize' }
+      case 'w':
+        return { x: room.x - edge / 2, y: room.y, width: edge, height: h, kx: room.x, ky: cy, cursor: 'ew-resize' }
+      case 'ne':
+        return {
+          x: room.x + w - corner,
+          y: room.y - corner / 2,
+          width: corner * 1.4,
+          height: corner * 1.4,
+          kx: room.x + w,
+          ky: room.y,
+          cursor: 'nesw-resize',
+        }
+      case 'nw':
+        return {
+          x: room.x - corner / 2,
+          y: room.y - corner / 2,
+          width: corner * 1.4,
+          height: corner * 1.4,
+          kx: room.x,
+          ky: room.y,
+          cursor: 'nwse-resize',
+        }
+      case 'se':
+        return {
+          x: room.x + w - corner,
+          y: room.y + h - corner,
+          width: corner * 1.4,
+          height: corner * 1.4,
+          kx: room.x + w,
+          ky: room.y + h,
+          cursor: 'nwse-resize',
+        }
+      case 'sw':
+        return {
+          x: room.x - corner / 2,
+          y: room.y + h - corner,
+          width: corner * 1.4,
+          height: corner * 1.4,
+          kx: room.x,
+          ky: room.y + h,
+          cursor: 'nesw-resize',
+        }
+    }
+  }
 
   return (
     <div className="plan-wrap">
@@ -182,19 +275,18 @@ export function FloorPlan({
       >
         <defs>
           <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="8" stroke="#1c1b19" strokeWidth="1.25" opacity="0.22" />
+            <line x1="0" y1="0" x2="0" y2="8" stroke="#0c7c72" strokeWidth="1.25" opacity="0.42" />
           </pattern>
           <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(28,27,25,0.045)" strokeWidth="1" />
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(19,32,41,0.055)" strokeWidth="1" />
           </pattern>
           <linearGradient id="canvasGlow" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#f7f3ec" />
-            <stop offset="100%" stopColor="#efeae2" />
+            <stop offset="0%" stopColor="rgba(12,124,114,0.04)" />
+            <stop offset="100%" stopColor="rgba(27,111,143,0.03)" />
           </linearGradient>
           <radialGradient id="coverGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="rgba(45,107,82,0.32)" />
-            <stop offset="52%" stopColor="rgba(45,107,82,0.12)" />
-            <stop offset="100%" stopColor="rgba(45,107,82,0)" />
+            <stop offset="0%" stopColor="rgba(12,124,114,0.2)" />
+            <stop offset="100%" stopColor="rgba(12,124,114,0.16)" />
           </radialGradient>
         </defs>
 
@@ -206,7 +298,7 @@ export function FloorPlan({
           const h = room.width * PX_PER_M
           const hatched = showHatch(room)
           const active = isEditing && room.id === activeRoomId
-          const off = (mode === 'plan' || mode === 'cover' || mode === 'marker') && !room.selected
+          const off = showCoverageOff && !room.selected
           return (
             <g
               key={room.id}
@@ -238,7 +330,7 @@ export function FloorPlan({
               >
                 {room.length.toFixed(1)} × {room.width.toFixed(1)} m
               </text>
-              {mode === 'plan' && (
+              {mode === 'plan' || mode === 'marker' ? (
                 <g
                   className={`cover-badge${room.selected ? ' is-on' : ''}`}
                   onPointerDown={(e) => onPointerDownCoverBadge(e, room)}
@@ -248,7 +340,56 @@ export function FloorPlan({
                     {room.selected ? '要装' : '不装'}
                   </text>
                 </g>
-              )}
+              ) : null}
+              {canResize && active &&
+                RESIZE_HANDLES.map((handle) => {
+                  const g = handleGeometry(room, handle)
+                  const isCorner = handle.length === 2
+                  return (
+                    <g
+                      key={handle}
+                      className={`resize-handle resize-${handle}${isCorner ? ' is-corner' : ' is-edge'}`}
+                      style={{ cursor: g.cursor }}
+                      onPointerDown={(e) => onPointerDownResize(e, room, handle)}
+                    >
+                      <rect
+                        className="resize-hit"
+                        x={g.x}
+                        y={g.y}
+                        width={g.width}
+                        height={g.height}
+                      />
+                      {isCorner ? (
+                        <rect
+                          className="resize-knob"
+                          x={g.kx - 5}
+                          y={g.ky - 5}
+                          width={10}
+                          height={10}
+                          rx={2}
+                        />
+                      ) : handle === 'n' || handle === 's' ? (
+                        <rect
+                          className="resize-knob resize-knob-edge"
+                          x={g.kx - 12}
+                          y={g.ky - 3.5}
+                          width={24}
+                          height={7}
+                          rx={3}
+                        />
+                      ) : (
+                        <rect
+                          className="resize-knob resize-knob-edge"
+                          x={g.kx - 3.5}
+                          y={g.ky - 12}
+                          width={7}
+                          height={24}
+                          rx={3}
+                        />
+                      )}
+                    </g>
+                  )
+                })}
             </g>
           )
         })}
@@ -258,7 +399,7 @@ export function FloorPlan({
             <g key={`cov-${d.id}`}>
               <circle cx={d.x} cy={d.y} r={d.coverageRadius} className="coverage-fill" />
               <circle cx={d.x} cy={d.y} r={d.coverageRadius} className="coverage-ring" />
-              {mode === 'adjust' && drag?.kind === 'device' && drag.id === d.id && (
+              {mode === 'adjust' && (d.installable === false || d.nearNoise === true) && (
                 <circle
                   cx={d.originX}
                   cy={d.originY}
@@ -314,9 +455,9 @@ export function FloorPlan({
           devices.map((d) => (
             <g
               key={d.id}
-              className={`device${mode === 'adjust' ? ' is-draggable' : ''}`}
+              className={`device${mode === 'adjust' && (d.installable === false || d.nearNoise === true) ? ' is-draggable' : ''}`}
               onPointerDown={(e) => {
-                if (mode !== 'adjust') return
+                if (mode !== 'adjust' || (d.installable !== false && d.nearNoise !== true)) return
                 e.stopPropagation()
                 ;(e.target as Element).setPointerCapture?.(e.pointerId)
                 setDrag({

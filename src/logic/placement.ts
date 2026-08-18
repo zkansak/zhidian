@@ -3,6 +3,12 @@ import type { DevicePlacement, Marker, Room } from '../types'
 /** Pixels per metre on the canvas */
 export const PX_PER_M = 40
 
+/** Living-room origin: enough empty space on all sides to add rooms. */
+export const LAYOUT_ORIGIN_X = 260
+export const LAYOUT_ORIGIN_Y = 190
+export const CANVAS_MIN_W = 760
+export const CANVAS_MIN_H = 560
+
 export function roomArea(room: Room): number {
   return room.length * room.width
 }
@@ -379,6 +385,95 @@ export function magneticSnapPosition(
   return { x: Math.max(0, x), y: Math.max(0, y) }
 }
 
+export type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+const MIN_ROOM_M = 1.5
+
+function roundMetres(v: number) {
+  return Math.max(MIN_ROOM_M, Math.round(v * 10) / 10)
+}
+
+function snapToEdges(value: number, edges: number[], threshold: number) {
+  let best = value
+  let bestDist = threshold + 1
+  for (const edge of edges) {
+    const d = Math.abs(value - edge)
+    if (d <= threshold && d < bestDist) {
+      bestDist = d
+      best = edge
+    }
+  }
+  return best
+}
+
+/**
+ * Resize a room from an edge/corner handle, with edge snap to neighboring rooms.
+ * length = horizontal (m), width = vertical (m).
+ */
+export function magneticResizeRoom(
+  room: Room,
+  handle: ResizeHandle,
+  pointerX: number,
+  pointerY: number,
+  others: Room[],
+  threshold = 16,
+): Pick<Room, 'x' | 'y' | 'length' | 'width'> {
+  let left = room.x
+  let top = room.y
+  let right = room.x + room.length * PX_PER_M
+  let bottom = room.y + room.width * PX_PER_M
+
+  const moveL = handle.includes('w')
+  const moveR = handle.includes('e')
+  const moveT = handle.includes('n')
+  const moveB = handle.includes('s')
+
+  if (moveL) left = pointerX
+  if (moveR) right = pointerX
+  if (moveT) top = pointerY
+  if (moveB) bottom = pointerY
+
+  const edgesX: number[] = []
+  const edgesY: number[] = []
+  for (const o of others) {
+    if (o.id === room.id) continue
+    edgesX.push(o.x, o.x + o.length * PX_PER_M)
+    edgesY.push(o.y, o.y + o.width * PX_PER_M)
+  }
+
+  if (moveL) left = snapToEdges(left, edgesX, threshold)
+  if (moveR) right = snapToEdges(right, edgesX, threshold)
+  if (moveT) top = snapToEdges(top, edgesY, threshold)
+  if (moveB) bottom = snapToEdges(bottom, edgesY, threshold)
+
+  const minPx = MIN_ROOM_M * PX_PER_M
+  if (right - left < minPx) {
+    if (moveL && !moveR) left = right - minPx
+    else right = left + minPx
+  }
+  if (bottom - top < minPx) {
+    if (moveT && !moveB) top = bottom - minPx
+    else bottom = top + minPx
+  }
+
+  left = Math.max(0, left)
+  top = Math.max(0, top)
+
+  const length = roundMetres((right - left) / PX_PER_M)
+  const width = roundMetres((bottom - top) / PX_PER_M)
+
+  // Keep the unmoved edges stable after metre rounding
+  const x = moveL && !moveR ? right - length * PX_PER_M : left
+  const y = moveT && !moveB ? bottom - width * PX_PER_M : top
+
+  return {
+    x: Math.max(0, x),
+    y: Math.max(0, y),
+    length,
+    width,
+  }
+}
+
 /**
  * One-shot: pack rooms so nearby blocks flush into a contiguous plan.
  * Keeps relative neighborhood (closest neighbor), anchor = top-left-most.
@@ -459,14 +554,62 @@ export function fitRoomsTogether(rooms: Room[]): Room[] {
   })
 }
 
+export function nextRoomPosition(
+  rooms: Room[],
+  length: number,
+  width: number,
+): { x: number; y: number } {
+  if (rooms.length === 0) {
+    return { x: LAYOUT_ORIGIN_X, y: LAYOUT_ORIGIN_Y }
+  }
+
+  const gap = 12
+  const mw = length * PX_PER_M
+  const mh = width * PX_PER_M
+  const anchor = rooms.find((r) => r.name.includes('客厅')) ?? rooms[0]
+  const ax = anchor.x
+  const ay = anchor.y
+  const aw = anchor.length * PX_PER_M
+  const ah = anchor.width * PX_PER_M
+
+  const candidates = [
+    { x: ax + aw + gap, y: ay },
+    { x: ax, y: ay + ah + gap },
+    { x: ax - mw - gap, y: ay },
+    { x: ax, y: ay - mh - gap },
+    { x: ax + aw + gap, y: ay + ah + gap },
+    { x: ax - mw - gap, y: ay + ah + gap },
+    { x: ax + aw + gap, y: ay - mh - gap },
+    { x: ax - mw - gap, y: ay - mh - gap },
+  ]
+
+  const overlaps = (x: number, y: number) =>
+    rooms.some((r) => {
+      const rw = r.length * PX_PER_M
+      const rh = r.width * PX_PER_M
+      return x < r.x + rw && x + mw > r.x && y < r.y + rh && y + mh > r.y
+    })
+
+  for (const c of candidates) {
+    const x = Math.max(0, c.x)
+    const y = Math.max(0, c.y)
+    if (!overlaps(x, y)) return { x, y }
+  }
+
+  const maxRight = Math.max(...rooms.map((r) => r.x + r.length * PX_PER_M))
+  return { x: maxRight + gap, y: ay }
+}
+
 export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number): Room[] {
   /** Separate blocks — not fused into one silhouette */
   const gap = 12
+  const ox = LAYOUT_ORIGIN_X
+  const oy = LAYOUT_ORIGIN_Y
   const living: Room = {
     id: 'living',
     name: '客厅',
-    x: 40,
-    y: 40,
+    x: ox,
+    y: oy,
     length: 6,
     width: 4.5,
     height,
@@ -479,8 +622,8 @@ export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number
       {
         id: 'bed1',
         name: '卧室',
-        x: 40 + living.length * PX_PER_M + gap,
-        y: 40,
+        x: ox + living.length * PX_PER_M + gap,
+        y: oy,
         length: 4,
         width: 3.5,
         height,
@@ -493,8 +636,8 @@ export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number
     const bed1: Room = {
       id: 'bed1',
       name: '卧室1',
-      x: 40 + living.length * PX_PER_M + gap,
-      y: 40,
+      x: ox + living.length * PX_PER_M + gap,
+      y: oy,
       length: 4,
       width: 3.2,
       height,
@@ -507,7 +650,7 @@ export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number
         id: 'bed2',
         name: '卧室2',
         x: bed1.x,
-        y: 40 + bed1.width * PX_PER_M + gap,
+        y: oy + bed1.width * PX_PER_M + gap,
         length: 4,
         width: 3,
         height,
@@ -520,8 +663,8 @@ export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number
   const bed1: Room = {
     id: 'bed1',
     name: '卧室1',
-    x: 40 + living.length * PX_PER_M + gap,
-    y: 40,
+    x: ox + living.length * PX_PER_M + gap,
+    y: oy,
     length: 3.8,
     width: 3,
     height,
@@ -531,7 +674,7 @@ export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number
     id: 'bed2',
     name: '卧室2',
     x: bed1.x,
-    y: 40 + bed1.width * PX_PER_M + gap,
+    y: oy + bed1.width * PX_PER_M + gap,
     length: 3.8,
     width: 3,
     height,
@@ -544,8 +687,8 @@ export function createPresetRooms(type: '1b1l' | '2b1l' | '3b1l', height: number
     {
       id: 'bed3',
       name: '卧室3',
-      x: 40,
-      y: 40 + living.width * PX_PER_M + gap,
+      x: ox,
+      y: oy + living.width * PX_PER_M + gap,
       length: 3.5,
       width: 3,
       height,
