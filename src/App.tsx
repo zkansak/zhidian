@@ -613,7 +613,7 @@ export default function App() {
                     setMarkerFuture([])
                   }}
                 />
-                <aside className="side-form">
+                <aside className="side-form result-list">
                   <p className="side-title">房间</p>
                   <p className="hint">至少保留一个「要装」。常坐处可跳过。</p>
                   {rooms.map((r) => {
@@ -649,9 +649,8 @@ export default function App() {
             <>
               <h1>系统方案</h1>
               <p className="lead">根据房间面积与长宽比生成推荐点位，并向常坐处适当偏移。</p>
-              <div className="split">
-                <div className="plan-col">
-                  <div className="result-toolbar">
+              <div className="plan-col">
+                <div className="result-toolbar">
                     <button type="button" className="btn ghost compact" onClick={regenerate}>
                       重新计算
                     </button>
@@ -671,17 +670,18 @@ export default function App() {
                         </span>
                       )}
                     </p>
-                  </div>
+                </div>
+                <div className="split">
                   <FloorPlan
                     rooms={rooms}
                     markers={markers}
                     devices={devices}
                     mode="result"
                   />
+                  <aside className="side-form result-list">
+                    <SchemeSummary rooms={rooms} markers={markers} devices={devices} />
+                  </aside>
                 </div>
-                <aside className="side-form result-list">
-                  <SchemeSummary rooms={rooms} markers={markers} devices={devices} />
-                </aside>
               </div>
             </>
           )}

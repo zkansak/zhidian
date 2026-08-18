@@ -20,12 +20,14 @@ export function aspectRatio(room: Room): number {
 }
 
 /**
- * Device count from area + aspect ratio.
- * ≤25 → 1；25–50 → 1(R≤2) / 2(R>2)；>50 → 2(R≤2) / 3(R>2)
+ * 个数取覆盖更好的一档（面积区间内取上限）：
+ * ≤25 → 1；25–50 → 2；>50 → 2(R≤2) / 3(R>2)
+ * R>3 至少 3 个，才能做△形。
  */
 export function deviceCountForArea(area: number, R = 1): number {
   if (area <= 25) return 1
-  if (area <= 50) return R <= 2 ? 1 : 2
+  if (R > 3) return 3
+  if (area <= 50) return 2
   return R <= 2 ? 2 : 3
 }
 
@@ -50,12 +52,12 @@ function basePoints(room: Room, count: number): { x: number; y: number }[] {
     if (count === 2) {
       return longIsX
         ? [
-            { x: L * 0.38, y: cy },
-            { x: L * 0.62, y: cy },
+            { x: L * 0.3, y: cy },
+            { x: L * 0.7, y: cy },
           ]
         : [
-            { x: cx, y: W * 0.38 },
-            { x: cx, y: W * 0.62 },
+            { x: cx, y: W * 0.3 },
+            { x: cx, y: W * 0.7 },
           ]
     }
     // count === 3
@@ -138,15 +140,161 @@ function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v))
 }
 
-export function wallDescription(room: Room, lx: number, ly: number): string {
+export function deviceWallRefs(room: Room, canvasX: number, canvasY: number) {
+  const lx = (canvasX - room.x) / PX_PER_M
+  const ly = (canvasY - room.y) / PX_PER_M
+  const w = room.length * PX_PER_M
+  const h = room.width * PX_PER_M
   const fromWest = lx
   const fromEast = room.length - lx
   const fromNorth = ly
   const fromSouth = room.width - ly
-  const h = fromWest <= fromEast ? `距西墙 ${fromWest.toFixed(1)} m` : `距东墙 ${fromEast.toFixed(1)} m`
+  const useWest = fromWest <= fromEast
+  const useNorth = fromNorth <= fromSouth
+
+  return {
+    h: {
+      side: useWest ? ('west' as const) : ('east' as const),
+      meters: useWest ? fromWest : fromEast,
+      x1: useWest ? room.x : room.x + w,
+      y1: canvasY,
+      x2: canvasX,
+      y2: canvasY,
+    },
+    v: {
+      side: useNorth ? ('north' as const) : ('south' as const),
+      meters: useNorth ? fromNorth : fromSouth,
+      x1: canvasX,
+      y1: useNorth ? room.y : room.y + h,
+      x2: canvasX,
+      y2: canvasY,
+    },
+  }
+}
+
+export function dimGeometry(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  vertical: boolean,
+) {
+  const len = Math.hypot(x2 - x1, y2 - y1)
+  if (len < 18) return null
+  const ux = (x2 - x1) / len
+  const uy = (y2 - y1) / len
+  const gap = 12
+  const ex = x2 - ux * gap
+  const ey = y2 - uy * gap
+  const tx = -uy * 5
+  const ty = ux * 5
+  const t = 0.7
+  const mx = x1 + (ex - x1) * t + (vertical ? -14 : 0)
+  const my = y1 + (ey - y1) * t + (vertical ? 0 : -10)
+  return { ex, ey, tx, ty, mx, my }
+}
+
+function boxesOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+  gap = 6,
+) {
+  return (
+    a.x < b.x + b.w + gap &&
+    a.x + a.w > b.x - gap &&
+    a.y < b.y + b.h + gap &&
+    a.y + a.h > b.y - gap
+  )
+}
+
+/** Place the room name in a corner that doesn't sit on wall-distance labels. */
+export function roomNameTagPos(room: Room, devices: DevicePlacement[], name: string) {
+  const tw = Math.max(36, 14 + name.length * 13)
+  const th = 20
+  const pad = 6
+  const w = room.length * PX_PER_M
+  const h = room.width * PX_PER_M
+  const obstacles = devices
+    .filter((d) => d.roomId === room.id)
+    .flatMap((d) => {
+      const refs = deviceWallRefs(room, d.x, d.y)
+      const boxes: { x: number; y: number; w: number; h: number }[] = []
+      for (const [seg, vertical] of [
+        [refs.h, false],
+        [refs.v, true],
+      ] as const) {
+        const g = dimGeometry(seg.x1, seg.y1, seg.x2, seg.y2, vertical)
+        if (!g) continue
+        boxes.push({ x: g.mx - 24, y: g.my - 9, w: 48, h: 18 })
+      }
+      return boxes
+    })
+
+  const cands = [
+    { x: room.x + pad, y: room.y + pad },
+    { x: room.x + w - pad - tw, y: room.y + pad },
+    { x: room.x + pad, y: room.y + h - pad - th },
+    { x: room.x + w - pad - tw, y: room.y + h - pad - th },
+  ]
+  const pick =
+    cands.find((c) => !obstacles.some((o) => boxesOverlap({ ...c, w: tw, h: th }, o))) ??
+    cands[2]
+  return { x: pick.x, y: pick.y, tw, th }
+}
+
+export function wallDistances(room: Room, lx: number, ly: number): { h: string; v: string } {
+  const refs = deviceWallRefs(room, room.x + lx * PX_PER_M, room.y + ly * PX_PER_M)
+  const h = refs.h.side === 'west' ? `距西墙 ${refs.h.meters.toFixed(1)} m` : `距东墙 ${refs.h.meters.toFixed(1)} m`
   const v =
-    fromNorth <= fromSouth ? `距北墙 ${fromNorth.toFixed(1)} m` : `距南墙 ${fromSouth.toFixed(1)} m`
+    refs.v.side === 'north'
+      ? `距北墙 ${refs.v.meters.toFixed(1)} m`
+      : `距南墙 ${refs.v.meters.toFixed(1)} m`
+  return { h, v }
+}
+
+export function wallDescription(room: Room, lx: number, ly: number): string {
+  const { h, v } = wallDistances(room, lx, ly)
   return `${h}，${v}`
+}
+
+/** Three install lines shown under each room: two walls + offset/sit note. */
+export function deviceInstallLines(
+  room: Room,
+  canvasX: number,
+  canvasY: number,
+  markers: Marker[],
+  originX: number,
+  originY: number,
+): { h: string; v: string; note: string } {
+  const lx = (canvasX - room.x) / PX_PER_M
+  const ly = (canvasY - room.y) / PX_PER_M
+  const { h, v } = wallDistances(room, lx, ly)
+
+  const adjM = Math.hypot(canvasX - originX, canvasY - originY) / PX_PER_M
+  const roomMarkers = markers.filter((m) => m.roomId === room.id)
+
+  let note: string
+  if (adjM > 0.05) {
+    note = `相对推荐点调整 ${adjM.toFixed(2)} m`
+    if (roomMarkers.length > 0) {
+      let nearestLabel = roomMarkers[0].label || '交流区'
+      let best = Infinity
+      for (const m of roomMarkers) {
+        const d = Math.hypot(m.x - canvasX, m.y - canvasY)
+        if (d < best) {
+          best = d
+          nearestLabel = m.label || '交流区'
+        }
+      }
+      note += ` · 距「${nearestLabel}」${(best / PX_PER_M).toFixed(1)} m`
+    }
+  } else if (roomMarkers.length === 0) {
+    note = '居中布置'
+  } else {
+    note = offsetTowardMarkers(lx, ly, room, markers).offsetDesc
+  }
+
+  return { h, v, note }
 }
 
 /** Live description for a device at canvas position (updates while dragging). */
@@ -158,37 +306,8 @@ export function describeDevicePosition(
   originX: number,
   originY: number,
 ): string {
-  const lx = (canvasX - room.x) / PX_PER_M
-  const ly = (canvasY - room.y) / PX_PER_M
-  const wall = wallDescription(room, lx, ly)
-
-  const adjM = Math.hypot(canvasX - originX, canvasY - originY) / PX_PER_M
-  const roomMarkers = markers.filter((m) => m.roomId === room.id)
-
-  let offsetDesc: string
-  if (adjM > 0.05) {
-    offsetDesc = `相对推荐点调整 ${adjM.toFixed(2)} m`
-    if (roomMarkers.length > 0) {
-      let nearestLabel = roomMarkers[0].label || '交流区'
-      let best = Infinity
-      for (const m of roomMarkers) {
-        const d = Math.hypot(m.x - canvasX, m.y - canvasY)
-        if (d < best) {
-          best = d
-          nearestLabel = m.label || '交流区'
-        }
-      }
-      const toMarker = best / PX_PER_M
-      offsetDesc += ` · 距「${nearestLabel}」${toMarker.toFixed(1)} m`
-    }
-  } else if (roomMarkers.length === 0) {
-    offsetDesc = '居中布置'
-  } else {
-    const { offsetDesc: od } = offsetTowardMarkers(lx, ly, room, markers)
-    offsetDesc = od
-  }
-
-  return `${room.name} · ${wall} · ${offsetDesc}`
+  const { h, v, note } = deviceInstallLines(room, canvasX, canvasY, markers, originX, originY)
+  return `${room.name} · ${h}，${v} · ${note}`
 }
 
 export function coverageRadiusForArea(area: number): number {
@@ -231,7 +350,7 @@ export function computePlacements(rooms: Room[], markers: Marker[]): DevicePlace
 
 export function layoutLabel(R: number, count: number): string {
   if (count === 1) return '中心布置'
-  if (R <= 2) return count === 2 ? '近中心双点' : '近中心布置'
+  if (R <= 2) return count === 2 ? '近中心双点' : '中心布置'
   if (R <= 3) return '横向双点'
   return count >= 3 ? '三角形布置' : '横向双点'
 }

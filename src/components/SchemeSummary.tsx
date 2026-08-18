@@ -1,10 +1,4 @@
-import {
-  aspectRatio,
-  deviceCountForArea,
-  layoutLabel,
-  placementHint,
-  roomArea,
-} from '../logic/placement'
+import { deviceInstallLines } from '../logic/placement'
 import type { DevicePlacement, Marker, Room } from '../types'
 
 export function SchemeSummary({
@@ -16,40 +10,32 @@ export function SchemeSummary({
   markers: Marker[]
   devices: DevicePlacement[]
 }) {
+  const covered = rooms.filter((r) => r.selected)
+
   return (
     <>
-      {rooms
-        .filter((r) => r.selected)
-        .map((r) => {
-          const area = roomArea(r)
-          const R = aspectRatio(r)
-          const count = devices.filter((d) => d.roomId === r.id).length
-          return (
-            <div key={r.id} className="result-card">
-              <h3>{r.name}</h3>
-              <p>
-                面积 {area.toFixed(1)} m² → 建议 {count} 个
-              </p>
-              <p>
-                长宽比 {R.toFixed(2)} → {layoutLabel(R, deviceCountForArea(area, R))}
-              </p>
-              <p className="setup-hint">{placementHint(r, markers)}</p>
-            </div>
-          )
-        })}
+      {covered.map((r) => {
+        const roomDevices = devices.filter((d) => d.roomId === r.id)
+        return (
+          <div key={r.id} className="result-card">
+            <h3>{r.name}</h3>
+            <p className="result-stat">{roomDevices.length} 个收声端</p>
+            {roomDevices.map((d, i) => {
+              const lines = deviceInstallLines(r, d.x, d.y, markers, d.originX, d.originY)
+              return (
+                <div key={d.id} className="result-point">
+                  {roomDevices.length > 1 && (
+                    <p className="result-point-label">点位 {i + 1}</p>
+                  )}
+                  <p>{lines.h}</p>
+                  <p>{lines.v}</p>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })}
       {devices.length === 0 && <p className="hint">暂无点位，请返回确认要装的房间。</p>}
-      {devices.length > 0 && (
-        <div className="device-descs">
-          {devices.map((d) => {
-            const room = rooms.find((r) => r.id === d.roomId)
-            return (
-              <p key={d.id}>
-                {room?.name}：{d.description}
-              </p>
-            )
-          })}
-        </div>
-      )}
     </>
   )
 }

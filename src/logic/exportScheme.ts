@@ -1,40 +1,67 @@
 import {
-  aspectRatio,
-  deviceCountForArea,
-  layoutLabel,
-  placementHint,
-  roomArea,
+  PX_PER_M,
+  deviceWallRefs,
+  dimGeometry,
+  roomNameTagPos,
 } from './placement'
 import type { DevicePlacement, Marker, Room } from '../types'
 
 const INK = '#132029'
 const INK_SOFT = '#5c6d7a'
 const ACCENT = '#0c7c72'
-const ACCENT_SOFT = 'rgba(12, 124, 114, 0.12)'
-const ACCENT_LINE = 'rgba(12, 124, 114, 0.28)'
-const LINE = 'rgba(19, 32, 41, 0.1)'
+const ACCENT_DEEP = '#085c55'
+const STROKE = '#1c2a33'
+const MARKER = '#c45e38'
 const FONT = '"Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif'
-
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const lines: string[] = []
-  let line = ''
-  for (const ch of text) {
-    const next = line + ch
-    if (line && ctx.measureText(next).width > maxWidth) {
-      lines.push(line)
-      line = ch
-    } else {
-      line = next
-    }
-  }
-  if (line) lines.push(line)
-  return lines.length > 0 ? lines : ['']
-}
 
 function stamp(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+}
+
+function drawDim(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  label: string,
+  vertical: boolean,
+  layer: 'line' | 'label',
+) {
+  const g = dimGeometry(x1, y1, x2, y2, vertical)
+  if (!g) return
+
+  if (layer === 'line') {
+    ctx.strokeStyle = ACCENT
+    ctx.lineWidth = 1.25
+    ctx.lineCap = 'square'
+    ctx.beginPath()
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(g.ex, g.ey)
+    ctx.moveTo(x1 - g.tx, y1 - g.ty)
+    ctx.lineTo(x1 + g.tx, y1 + g.ty)
+    ctx.moveTo(g.ex - g.tx, g.ey - g.ty)
+    ctx.lineTo(g.ex + g.tx, g.ey + g.ty)
+    ctx.stroke()
+    return
+  }
+
+  ctx.font = `600 12px ${FONT}`
+  const tw = ctx.measureText(label).width + 10
+  const th = 16
+  ctx.fillStyle = 'rgba(255,255,255,0.96)'
+  ctx.strokeStyle = 'rgba(12, 124, 114, 0.18)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.roundRect(g.mx - tw / 2, g.my - th / 2, tw, th, 3)
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = ACCENT_DEEP
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, g.mx, g.my)
 }
 
 export async function downloadSchemePng(
@@ -43,127 +70,120 @@ export async function downloadSchemePng(
   devices: DevicePlacement[],
 ): Promise<void> {
   await document.fonts.ready
+  if (rooms.length === 0) return
 
   const scale = 2
-  const width = 440
-  const pad = 28
-  const inner = width - pad * 2
+  const margin = 40
+  const header = 52
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+
+  for (const r of rooms) {
+    const w = r.length * PX_PER_M
+    const h = r.width * PX_PER_M
+    minX = Math.min(minX, r.x)
+    minY = Math.min(minY, r.y)
+    maxX = Math.max(maxX, r.x + w)
+    maxY = Math.max(maxY, r.y + h)
+  }
+
+  const contentW = Math.max(320, maxX - minX)
+  const contentH = Math.max(220, maxY - minY)
+  const width = contentW + margin * 2
+  const height = contentH + margin * 2 + header
+
   const canvas = document.createElement('canvas')
+  canvas.width = Math.ceil(width * scale)
+  canvas.height = Math.ceil(height * scale)
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-
-  type Piece =
-    | { t: 'title'; y: number }
-    | { t: 'sub'; y: number }
-    | { t: 'h3'; y: number; text: string }
-    | { t: 'p'; y: number; text: string }
-    | { t: 'hint'; y: number; text: string }
-    | { t: 'rule'; y: number }
-    | { t: 'box'; y: number; h: number; lines: string[] }
-
-  const pieces: Piece[] = []
-  let y = pad + 8
-
-  pieces.push({ t: 'title', y })
-  y += 28
-  pieces.push({ t: 'sub', y })
-  y += 36
-
-  for (const r of rooms.filter((room) => room.selected)) {
-    const area = roomArea(r)
-    const R = aspectRatio(r)
-    const count = devices.filter((d) => d.roomId === r.id).length
-    pieces.push({ t: 'h3', y, text: r.name })
-    y += 24
-    pieces.push({ t: 'p', y, text: `面积 ${area.toFixed(1)} m² → 建议 ${count} 个` })
-    y += 20
-    pieces.push({
-      t: 'p',
-      y,
-      text: `长宽比 ${R.toFixed(2)} → ${layoutLabel(R, deviceCountForArea(area, R))}`,
-    })
-    y += 20
-    pieces.push({ t: 'hint', y, text: placementHint(r, markers) })
-    y += 18
-    pieces.push({ t: 'rule', y })
-    y += 18
-  }
-
-  if (devices.length > 0) {
-    ctx.font = `400 13px ${FONT}`
-    const descLines = devices.flatMap((d, i) => {
-      const room = rooms.find((r) => r.id === d.roomId)
-      const text = `${room?.name ?? '房间'}：${d.description}`
-      const wrapped = wrapText(ctx, text, inner - 24)
-      return i === 0 ? wrapped : ['', ...wrapped]
-    })
-    const boxH = 16 + descLines.length * 22 + 12
-    pieces.push({ t: 'box', y, h: boxH, lines: descLines })
-    y += boxH
-  }
-
-  const height = y + pad
-  canvas.width = width * scale
-  canvas.height = height * scale
   ctx.scale(scale, scale)
 
-  ctx.fillStyle = '#ffffff'
+  ctx.fillStyle = '#eef4f6'
   ctx.fillRect(0, 0, width, height)
 
-  ctx.strokeStyle = LINE
-  ctx.lineWidth = 1
-  ctx.strokeRect(0.5, 0.5, width - 1, height - 1)
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, width, header)
+  ctx.fillStyle = ACCENT
+  ctx.beginPath()
+  ctx.arc(22, header / 2, 5, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.fillStyle = INK
+  ctx.font = `600 16px ${FONT}`
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('置点 · 安装方案', 34, header / 2)
+  ctx.fillStyle = INK_SOFT
+  ctx.font = `400 12px ${FONT}`
+  ctx.textAlign = 'right'
+  ctx.fillText('数字为距最近墙的安装距离', width - 18, header / 2)
 
-  for (const p of pieces) {
-    if (p.t === 'title') {
-      ctx.fillStyle = ACCENT
-      ctx.beginPath()
-      ctx.arc(pad + 5, p.y + 8, 5, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.fillStyle = INK
-      ctx.font = `600 18px ${FONT}`
-      ctx.fillText('置点 · 安装方案', pad + 18, p.y + 14)
-    } else if (p.t === 'sub') {
-      ctx.fillStyle = INK_SOFT
-      ctx.font = `400 12px ${FONT}`
-      ctx.fillText('已按现场条件调整，可对照安装', pad, p.y + 10)
-    } else if (p.t === 'h3') {
-      ctx.fillStyle = INK
-      ctx.font = `600 15px ${FONT}`
-      ctx.fillText(p.text, pad, p.y + 12)
-    } else if (p.t === 'p') {
-      ctx.fillStyle = INK_SOFT
-      ctx.font = `400 13px ${FONT}`
-      ctx.fillText(p.text, pad, p.y + 10)
-    } else if (p.t === 'hint') {
-      ctx.fillStyle = ACCENT
-      ctx.font = `400 12px ${FONT}`
-      ctx.fillText(p.text, pad, p.y + 10)
-    } else if (p.t === 'rule') {
-      ctx.strokeStyle = LINE
-      ctx.beginPath()
-      ctx.moveTo(pad, p.y)
-      ctx.lineTo(width - pad, p.y)
-      ctx.stroke()
-    } else if (p.t === 'box') {
-      ctx.fillStyle = ACCENT_SOFT
-      ctx.strokeStyle = ACCENT_LINE
-      ctx.lineWidth = 1
-      const x = pad
-      const w = inner
-      ctx.beginPath()
-      ctx.roundRect(x, p.y, w, p.h, 6)
-      ctx.fill()
-      ctx.stroke()
-      ctx.fillStyle = INK
-      ctx.font = `400 13px ${FONT}`
-      let ly = p.y + 28
-      for (const line of p.lines) {
-        if (line) ctx.fillText(line, x + 12, ly)
-        ly += 22
-      }
-    }
+  ctx.save()
+  ctx.translate(margin - minX, header + margin - minY)
+
+  for (const r of rooms) {
+    const w = r.length * PX_PER_M
+    const h = r.width * PX_PER_M
+    ctx.fillStyle = r.selected ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.55)'
+    ctx.strokeStyle = STROKE
+    ctx.lineWidth = 1.6
+    ctx.fillRect(r.x, r.y, w, h)
+    ctx.strokeRect(r.x, r.y, w, h)
   }
+
+  for (const m of markers) {
+    ctx.fillStyle = MARKER
+    ctx.beginPath()
+    ctx.roundRect(m.x - 8, m.y - 5.5, 16, 11, 2.5)
+    ctx.fill()
+  }
+
+  for (const d of devices) {
+    const room = rooms.find((r) => r.id === d.roomId)
+    if (!room) continue
+    const refs = deviceWallRefs(room, d.x, d.y)
+    drawDim(ctx, refs.h.x1, refs.h.y1, refs.h.x2, refs.h.y2, `${refs.h.meters.toFixed(1)} m`, false, 'line')
+    drawDim(ctx, refs.v.x1, refs.v.y1, refs.v.x2, refs.v.y2, `${refs.v.meters.toFixed(1)} m`, true, 'line')
+  }
+
+  for (const d of devices) {
+    ctx.beginPath()
+    ctx.arc(d.x, d.y, 8, 0, Math.PI * 2)
+    ctx.fillStyle = ACCENT
+    ctx.fill()
+    ctx.lineWidth = 2.25
+    ctx.strokeStyle = '#fff'
+    ctx.stroke()
+  }
+
+  for (const d of devices) {
+    const room = rooms.find((r) => r.id === d.roomId)
+    if (!room) continue
+    const refs = deviceWallRefs(room, d.x, d.y)
+    drawDim(ctx, refs.h.x1, refs.h.y1, refs.h.x2, refs.h.y2, `${refs.h.meters.toFixed(1)} m`, false, 'label')
+    drawDim(ctx, refs.v.x1, refs.v.y1, refs.v.x2, refs.v.y2, `${refs.v.meters.toFixed(1)} m`, true, 'label')
+  }
+
+  for (const r of rooms) {
+    const name = r.name || '未命名'
+    const tag = roomNameTagPos(r, devices, name)
+    ctx.font = `600 13px ${FONT}`
+    ctx.fillStyle = 'rgba(255,255,255,0.96)'
+    ctx.strokeStyle = 'rgba(19, 32, 41, 0.08)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(tag.x, tag.y, tag.tw, tag.th, 4)
+    ctx.fill()
+    ctx.stroke()
+    ctx.fillStyle = INK
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(name, tag.x + 7, tag.y + tag.th / 2)
+  }
+
+  ctx.restore()
 
   await new Promise<void>((resolve) => {
     canvas.toBlob((blob) => {

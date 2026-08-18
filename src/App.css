@@ -970,9 +970,26 @@ input {
   align-items: start;
 }
 
+.split > .plan-wrap {
+  min-width: 0;
+}
+
+.split > .side-form.result-list {
+  height: 0;
+  min-height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
 @media (max-width: 860px) {
   .split {
     grid-template-columns: 1fr;
+  }
+
+  .split > .side-form.result-list {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
   }
 }
 
@@ -1113,8 +1130,8 @@ input {
 }
 
 .result-card h3 {
-  margin: 0 0 0.3rem;
-  font-size: 1rem;
+  margin: 0 0 0.2rem;
+  font-size: 1.05rem;
   font-weight: 600;
 }
 
@@ -1123,6 +1140,32 @@ input {
   font-size: 0.82rem;
   font-weight: 400;
   color: var(--ink-soft);
+}
+
+.result-card .result-stat {
+  margin: 0.05rem 0 0.45rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+.result-point {
+  margin: 0.15rem 0 0.35rem;
+}
+
+.result-point p {
+  margin: 0.12rem 0;
+  font-size: 0.86rem;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.result-point .result-point-label {
+  margin-bottom: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  letter-spacing: 0.04em;
 }
 
 .result-toolbar {
