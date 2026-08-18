@@ -1,0 +1,7 @@
+.review*
+.review-*/
+node_modules
+dist
+.git
+*.png
+.DS_Store
