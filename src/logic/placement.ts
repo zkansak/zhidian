@@ -19,121 +19,294 @@ export function aspectRatio(room: Room): number {
   return b > 0 ? a / b : 1
 }
 
-/**
- * 个数取覆盖更好的一档（面积区间内取上限）：
- * ≤25 → 1；25–50 → 2；>50 → 2(R≤2) / 3(R>2)
- * R>3 至少 3 个，才能做△形。
- */
-export function deviceCountForArea(area: number, R = 1): number {
-  if (area <= 25) return 1
-  if (R > 3) return 3
-  if (area <= 50) return 2
-  return R <= 2 ? 2 : 3
+/** 二级：中心到最远角距离 d = √((L/2)² + (W/2)²) */
+export function cornerDistance(room: Room): number {
+  const L = Math.max(room.length, room.width)
+  const W = Math.min(room.length, room.width)
+  return Math.hypot(L / 2, W / 2)
+}
+
+const WALL_CLEAR = 1
+const HOTSPOT_PAIR_M = 4
+const DUAL_SPACING_MIN = 4
+const DUAL_SPACING_MAX = 6
+const HOTSPOT_PULL_MIN = 0.5
+const HOTSPOT_PULL_MAX = 1
+
+function roomMarkers(room: Room, markers: Marker[]): Marker[] {
+  return markers.filter((m) => m.roomId === room.id)
+}
+
+function markerLocal(room: Room, m: Marker) {
+  return { x: (m.x - room.x) / PX_PER_M, y: (m.y - room.y) / PX_PER_M }
+}
+
+/** 两常坐最远间距（米）；不足两个常坐时为 0 */
+function farthestHotspotDist(room: Room, markers: Marker[]): number {
+  const ms = roomMarkers(room, markers)
+  let best = 0
+  for (let i = 0; i < ms.length; i++) {
+    const a = markerLocal(room, ms[i])
+    for (let j = i + 1; j < ms.length; j++) {
+      const b = markerLocal(room, ms[j])
+      best = Math.max(best, Math.hypot(a.x - b.x, a.y - b.y))
+    }
+  }
+  return best
 }
 
 /**
- * Base layout points in room-local coords (origin = room top-left, metres).
- * R ≤ 2 → center (or near-center split)；2 < R ≤ 3 → 横向双点；R > 3 → 双点/三角
+ * 个数：一级取「最佳效果」档。
+ * 二级 d≤5 可单点再看三级；d>5 至少双点。
+ * 三级 R≤1.5 近方；1.5<R≤2.5 狭长双点；R>2.5 极狭长三点。
+ * 近方且 d>5 → 三角三点。
+ * 五级：两常坐间距 >4 m → 至少双点。
  */
-function basePoints(room: Room, count: number): { x: number; y: number }[] {
+export function deviceCountForRoom(room: Room, markers: Marker[] = []): number {
+  const d = cornerDistance(room)
   const R = aspectRatio(room)
+
+  let count: number
+  if (d <= 5) {
+    if (R <= 1.5) count = 1
+    else if (R <= 2.5) count = 2
+    else count = 3
+  } else if (R <= 1.5) {
+    count = 3
+  } else if (R <= 2.5) {
+    count = 2
+  } else {
+    count = 3
+  }
+
+  if (farthestHotspotDist(room, markers) > HOTSPOT_PAIR_M) {
+    count = Math.max(count, 2)
+  }
+  return count
+}
+
+/** @deprecated 兼容旧调用；请用 deviceCountForRoom */
+export function deviceCountForArea(area: number, R = 1): number {
+  const side = Math.sqrt(Math.max(area, 1))
+  const fake: Room = {
+    id: '_',
+    name: '',
+    x: 0,
+    y: 0,
+    length: side * Math.sqrt(R),
+    width: side / Math.sqrt(R),
+    height: 2.8,
+    selected: true,
+  }
+  return deviceCountForRoom(fake, [])
+}
+
+function clampToWall(v: number, span: number) {
+  if (span <= 2 * WALL_CLEAR) return span / 2
+  return clamp(v, WALL_CLEAR, span - WALL_CLEAR)
+}
+
+/** 双点：沿长轴均分，间距尽量落在 4～6 m */
+function dualAlongLongAxis(room: Room): { x: number; y: number }[] {
   const L = room.length
   const W = room.width
-  const cx = L / 2
-  const cy = W / 2
   const longIsX = L >= W
+  const long = longIsX ? L : W
+  const midLong = long / 2
+  const midShort = (longIsX ? W : L) / 2
+  const maxSpan = Math.max(0.2, long - 2 * WALL_CLEAR)
+  let spacing: number
+  if (maxSpan < DUAL_SPACING_MIN) spacing = maxSpan
+  else spacing = Math.min(DUAL_SPACING_MAX, Math.max(DUAL_SPACING_MIN, Math.min(5, maxSpan)))
 
-  if (count === 1) {
-    return [{ x: cx, y: cy }]
-  }
-
-  // Roughly square / mild aspect: center-biased
-  if (R <= 2) {
-    if (count === 2) {
-      return longIsX
-        ? [
-            { x: L * 0.3, y: cy },
-            { x: L * 0.7, y: cy },
-          ]
-        : [
-            { x: cx, y: W * 0.3 },
-            { x: cx, y: W * 0.7 },
-          ]
-    }
-    // count === 3
-    return [
-      { x: L * 0.3, y: W * 0.35 },
-      { x: L * 0.7, y: W * 0.35 },
-      { x: cx, y: W * 0.7 },
-    ]
-  }
-
-  // Elongated: horizontal (or vertical) double / triangle along long axis
-  if (count === 2) {
-    return longIsX
-      ? [
-          { x: L / 3, y: cy },
-          { x: (2 * L) / 3, y: cy },
-        ]
-      : [
-          { x: cx, y: W / 3 },
-          { x: cx, y: (2 * W) / 3 },
-        ]
-  }
-
-  // count === 3, R > 2 → triangle
+  const a = midLong - spacing / 2
+  const b = midLong + spacing / 2
   if (longIsX) {
     return [
-      { x: L * 0.22, y: cy },
-      { x: L * 0.78, y: cy },
-      { x: cx, y: W * (R > 3 ? 0.32 : 0.38) },
+      { x: clampToWall(a, L), y: midShort },
+      { x: clampToWall(b, L), y: midShort },
     ]
   }
   return [
-    { x: cx, y: W * 0.22 },
-    { x: cx, y: W * 0.78 },
-    { x: L * (R > 3 ? 0.32 : 0.38), y: cy },
+    { x: midShort, y: clampToWall(a, W) },
+    { x: midShort, y: clampToWall(b, W) },
   ]
 }
 
-/** Pull placement toward nearest communication marker (max ~0.5 m) */
+/** 三点：沿长轴均匀排布 */
+function tripleAlongLongAxis(room: Room): { x: number; y: number }[] {
+  const L = room.length
+  const W = room.width
+  const longIsX = L >= W
+  const long = longIsX ? L : W
+  const midShort = (longIsX ? W : L) / 2
+  const span = Math.max(0.2, long - 2 * WALL_CLEAR)
+  const xs = [0, 0.5, 1].map((t) => WALL_CLEAR + span * t)
+  if (longIsX) return xs.map((x) => ({ x, y: midShort }))
+  return xs.map((y) => ({ x: midShort, y }))
+}
+
+/** 近方大空间：三角布置 */
+function trianglePoints(room: Room): { x: number; y: number }[] {
+  const L = room.length
+  const W = room.width
+  const longIsX = L >= W
+  if (longIsX) {
+    return [
+      { x: clampToWall(L * 0.28, L), y: clampToWall(W * 0.5, W) },
+      { x: clampToWall(L * 0.72, L), y: clampToWall(W * 0.5, W) },
+      { x: clampToWall(L * 0.5, L), y: clampToWall(W * 0.32, W) },
+    ]
+  }
+  return [
+    { x: clampToWall(L * 0.5, L), y: clampToWall(W * 0.28, W) },
+    { x: clampToWall(L * 0.5, L), y: clampToWall(W * 0.72, W) },
+    { x: clampToWall(L * 0.32, L), y: clampToWall(W * 0.5, W) },
+  ]
+}
+
+/**
+ * 六级布置。
+ * 单点中心；双点长轴；三点在近方大空间用三角，否则长轴三点。
+ */
+function basePoints(room: Room, count: number): { x: number; y: number }[] {
+  const R = aspectRatio(room)
+  const d = cornerDistance(room)
+  const cx = room.length / 2
+  const cy = room.width / 2
+
+  if (count <= 1) return [{ x: cx, y: cy }]
+  if (count === 2) return dualAlongLongAxis(room)
+  if (R <= 1.5 && d > 5) return trianglePoints(room)
+  return tripleAlongLongAxis(room)
+}
+
+/** 五级：两常坐过远时，双点分别靠近这两处（贴墙 ≥1 m） */
+function dualNearFarthestHotspots(
+  room: Room,
+  markers: Marker[],
+): { x: number; y: number }[] | null {
+  const pair = farthestHotspotPair(room, markers)
+  if (!pair) return null
+  return [
+    { x: clampToWall(pair.a.x, room.length), y: clampToWall(pair.a.y, room.width) },
+    { x: clampToWall(pair.b.x, room.length), y: clampToWall(pair.b.y, room.width) },
+  ]
+}
+
+/** 三点且存在远距常坐对：两点罩热点，第三点放中心（三角/长轴的折中） */
+function tripleWithHotspotPair(
+  room: Room,
+  markers: Marker[],
+): { x: number; y: number }[] | null {
+  const pair = farthestHotspotPair(room, markers)
+  if (!pair) return null
+  return [
+    { x: clampToWall(pair.a.x, room.length), y: clampToWall(pair.a.y, room.width) },
+    { x: clampToWall(pair.b.x, room.length), y: clampToWall(pair.b.y, room.width) },
+    { x: room.length / 2, y: room.width / 2 },
+  ]
+}
+
+function farthestHotspotPair(
+  room: Room,
+  markers: Marker[],
+): { a: { x: number; y: number }; b: { x: number; y: number }; dist: number } | null {
+  const ms = roomMarkers(room, markers)
+  if (ms.length < 2) return null
+  let bestI = 0
+  let bestJ = 1
+  let best = 0
+  for (let i = 0; i < ms.length; i++) {
+    const a = markerLocal(room, ms[i])
+    for (let j = i + 1; j < ms.length; j++) {
+      const b = markerLocal(room, ms[j])
+      const dist = Math.hypot(a.x - b.x, a.y - b.y)
+      if (dist > best) {
+        best = dist
+        bestI = i
+        bestJ = j
+      }
+    }
+  }
+  if (best <= HOTSPOT_PAIR_M) return null
+  return {
+    a: markerLocal(room, ms[bestI]),
+    b: markerLocal(room, ms[bestJ]),
+    dist: best,
+  }
+}
+
+/**
+ * 四级：仅单点时，从几何中心向交流热点偏移 0.5～1 m，距墙 ≥1 m。
+ * 多点布置保持六级几何，避免全部被拉向同一热点。
+ */
 function offsetTowardMarkers(
   px: number,
   py: number,
   room: Room,
   markers: Marker[],
 ): { x: number; y: number; offsetDesc: string } {
-  const roomMarkers = markers.filter((m) => m.roomId === room.id)
-  if (roomMarkers.length === 0) {
+  const ms = roomMarkers(room, markers)
+  if (ms.length === 0) {
     return { x: px, y: py, offsetDesc: '居中布置' }
   }
 
-  let nearest = roomMarkers[0]
+  let nearest = ms[0]
   let bestDist = Infinity
-  for (const m of roomMarkers) {
-    const mx = (m.x - room.x) / PX_PER_M
-    const my = (m.y - room.y) / PX_PER_M
-    const d = Math.hypot(mx - px, my - py)
-    if (d < bestDist) {
-      bestDist = d
+  for (const m of ms) {
+    const loc = markerLocal(room, m)
+    const dist = Math.hypot(loc.x - px, loc.y - py)
+    if (dist < bestDist) {
+      bestDist = dist
       nearest = m
     }
   }
 
-  const mx = (nearest.x - room.x) / PX_PER_M
-  const my = (nearest.y - room.y) / PX_PER_M
-  const dx = mx - px
-  const dy = my - py
+  const loc = markerLocal(room, nearest)
+  const dx = loc.x - px
+  const dy = loc.y - py
   const dist = Math.hypot(dx, dy) || 1
-  const pull = Math.min(0.5, dist * 0.35)
-  const nx = clamp(px + (dx / dist) * pull, 0.4, room.length - 0.4)
-  const ny = clamp(py + (dy / dist) * pull, 0.4, room.width - 0.4)
+  const pull =
+    dist <= HOTSPOT_PULL_MIN
+      ? dist
+      : Math.min(HOTSPOT_PULL_MAX, Math.max(HOTSPOT_PULL_MIN, Math.min(dist, HOTSPOT_PULL_MAX)))
+
+  const nx = clampToWall(px + (dx / dist) * pull, room.length)
+  const ny = clampToWall(py + (dy / dist) * pull, room.width)
+  const moved = Math.hypot(nx - px, ny - py)
 
   return {
     x: nx,
     y: ny,
-    offsetDesc: `向「${nearest.label || '交流区'}」偏移 ${pull.toFixed(1)} m`,
+    offsetDesc: `向「${nearest.label || '交流区'}」偏移 ${moved.toFixed(1)} m`,
   }
+}
+
+/** 按二级～六级得到房间内点位（米，相对房间左上） */
+function resolveRoomBases(
+  room: Room,
+  markers: Marker[],
+): { bases: { x: number; y: number }[]; applyHotspotOffset: boolean } {
+  const count = deviceCountForRoom(room, markers)
+
+  if (count === 1) {
+    return {
+      bases: [{ x: room.length / 2, y: room.width / 2 }],
+      applyHotspotOffset: true,
+    }
+  }
+
+  if (count === 2) {
+    const dual = dualNearFarthestHotspots(room, markers)
+    if (dual) return { bases: dual, applyHotspotOffset: false }
+    return { bases: dualAlongLongAxis(room), applyHotspotOffset: false }
+  }
+
+  // count >= 3
+  const withHotspots = tripleWithHotspotPair(room, markers)
+  if (withHotspots) return { bases: withHotspots, applyHotspotOffset: false }
+  return { bases: basePoints(room, count), applyHotspotOffset: false }
 }
 
 function clamp(v: number, min: number, max: number) {
@@ -291,7 +464,10 @@ export function deviceInstallLines(
   } else if (roomMarkers.length === 0) {
     note = '居中布置'
   } else {
-    note = offsetTowardMarkers(lx, ly, room, markers).offsetDesc
+    // 必须从几何中心算偏移文案。若传入已偏移后的 (lx,ly)，
+    // offsetTowardMarkers 会再拉一次，常显示成误导的 0.1 m。
+    const fromCenter = offsetTowardMarkers(room.length / 2, room.width / 2, room, markers)
+    note = fromCenter.offsetDesc
   }
 
   return { h, v, note }
@@ -311,7 +487,11 @@ export function describeDevicePosition(
 }
 
 export function coverageRadiusForArea(area: number): number {
-  return Math.min(4.5, Math.max(2.2, Math.sqrt(area) * 0.45))
+  return Math.min(5, Math.max(2.5, Math.sqrt(area) * 0.45))
+}
+
+export function coverageRadiusForRoom(room: Room): number {
+  return Math.min(5.5, Math.max(2.5, cornerDistance(room)))
 }
 
 export function computePlacements(rooms: Room[], markers: Marker[]): DevicePlacement[] {
@@ -319,16 +499,15 @@ export function computePlacements(rooms: Room[], markers: Marker[]): DevicePlace
   const covered = rooms.filter((r) => r.selected)
 
   for (const room of covered) {
-    const area = roomArea(room)
-    const R = aspectRatio(room)
-    const count = deviceCountForArea(area, R)
-    const bases = basePoints(room, count)
-    const radius = coverageRadiusForArea(area)
+    const { bases, applyHotspotOffset } = resolveRoomBases(room, markers)
+    const radius = coverageRadiusForRoom(room)
 
     bases.forEach((base, i) => {
-      const { x, y } = offsetTowardMarkers(base.x, base.y, room, markers)
-      const cx = room.x + x * PX_PER_M
-      const cy = room.y + y * PX_PER_M
+      const placed = applyHotspotOffset
+        ? offsetTowardMarkers(base.x, base.y, room, markers)
+        : { x: base.x, y: base.y }
+      const cx = room.x + placed.x * PX_PER_M
+      const cy = room.y + placed.y * PX_PER_M
       devices.push({
         id: `${room.id}-d${i}`,
         roomId: room.id,
@@ -350,9 +529,9 @@ export function computePlacements(rooms: Room[], markers: Marker[]): DevicePlace
 
 export function layoutLabel(R: number, count: number): string {
   if (count === 1) return '中心布置'
-  if (R <= 2) return count === 2 ? '近中心双点' : '中心布置'
-  if (R <= 3) return '横向双点'
-  return count >= 3 ? '三角形布置' : '横向双点'
+  if (count === 2) return R <= 1.5 ? '双点布置' : '长轴双点'
+  if (R <= 1.5) return '三角形布置'
+  return '长轴三点'
 }
 
 /** Consumer-facing placement line (no algorithm jargon). */
