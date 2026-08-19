@@ -661,7 +661,7 @@ export default function App() {
                       </span>
                       <span>
                         <i className="leg-cover" aria-hidden />
-                        预计覆盖
+                        最佳收音 3 m
                       </span>
                       {markers.length > 0 && (
                         <span>

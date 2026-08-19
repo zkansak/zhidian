@@ -26,10 +26,18 @@ export function cornerDistance(room: Room): number {
   return Math.hypot(L / 2, W / 2)
 }
 
+/** 产品：3 m 内最佳收音，5 m 最远（示意圆用最佳半径，全屋统一）。 */
+export const COVER_BEST_M = 3
+export const COVER_MAX_M = 5
+
 const WALL_CLEAR = 1
 const HOTSPOT_PAIR_M = 4
-const DUAL_SPACING_MIN = 4
-const DUAL_SPACING_MAX = 6
+/** 双点目标间距：按 3 m 最佳圈控制重叠（间距约 4.5～5.5，重叠约 0.5～1.5 m） */
+const DUAL_SPACING_MIN = 4.5
+const DUAL_SPACING_MAX = 5.5
+/** 长轴可布置净长不足时，不强行多点（避免小房重叠致回声） */
+const DUAL_FEASIBLE_MIN = 3.5
+const TRIPLE_FEASIBLE_MIN = 7
 const HOTSPOT_PULL_MIN = 0.5
 const HOTSPOT_PULL_MAX = 1
 
@@ -39,6 +47,12 @@ function roomMarkers(room: Room, markers: Marker[]): Marker[] {
 
 function markerLocal(room: Room, m: Marker) {
   return { x: (m.x - room.x) / PX_PER_M, y: (m.y - room.y) / PX_PER_M }
+}
+
+/** 长轴去掉两侧墙距后的可布置长度 */
+function longAxisUsable(room: Room): number {
+  const long = Math.max(room.length, room.width)
+  return Math.max(0, long - 2 * WALL_CLEAR)
 }
 
 /** 两常坐最远间距（米）；不足两个常坐时为 0 */
@@ -56,21 +70,25 @@ function farthestHotspotDist(room: Room, markers: Marker[]): number {
 }
 
 /**
- * 个数：一级取「最佳效果」档。
- * 二级 d≤5 可单点再看三级；d>5 至少双点。
- * 三级 R≤1.5 近方；1.5<R≤2.5 狭长双点；R>2.5 极狭长三点。
- * 近方且 d>5 → 三角三点。
- * 五级：两常坐间距 >4 m → 至少双点。
+ * 个数（对齐产品 3 m 最佳 / 5 m 最远）：
+ * - d≤3：中心单点已在最佳范围内 → 固定 1（小房不因 R 加机）
+ * - 3<d≤5：角在最远内；近方仍 1；狭长 2；极狭长 2（净长够再 3）
+ * - d>5：近方三角 3；狭长 2；极狭长 3
+ * - 五级：两常坐 >4 m → 至少 2（仍受净长门闩约束）
+ * - 长轴净长不够双/三点所需间距 → 降级，避免过密重叠
  */
 export function deviceCountForRoom(room: Room, markers: Marker[] = []): number {
   const d = cornerDistance(room)
   const R = aspectRatio(room)
+  const usable = longAxisUsable(room)
 
   let count: number
-  if (d <= 5) {
+  if (d <= COVER_BEST_M) {
+    count = 1
+  } else if (d <= COVER_MAX_M) {
     if (R <= 1.5) count = 1
     else if (R <= 2.5) count = 2
-    else count = 3
+    else count = usable >= TRIPLE_FEASIBLE_MIN ? 3 : 2
   } else if (R <= 1.5) {
     count = 3
   } else if (R <= 2.5) {
@@ -82,6 +100,12 @@ export function deviceCountForRoom(room: Room, markers: Marker[] = []): number {
   if (farthestHotspotDist(room, markers) > HOTSPOT_PAIR_M) {
     count = Math.max(count, 2)
   }
+
+  // 仅「长轴多点」受净长约束；近方三角不靠长轴拉开，不能用同一门闩降级
+  const longAxisMulti = R > 1.5
+  if (longAxisMulti && count >= 3 && usable < TRIPLE_FEASIBLE_MIN) count = 2
+  if (count >= 2 && usable < DUAL_FEASIBLE_MIN) count = 1
+
   return count
 }
 
@@ -106,7 +130,7 @@ function clampToWall(v: number, span: number) {
   return clamp(v, WALL_CLEAR, span - WALL_CLEAR)
 }
 
-/** 双点：沿长轴均分，间距尽量落在 4～6 m */
+/** 双点：沿长轴均分，间距尽量落在 4.5～5.5 m（匹配 3 m 最佳圈，减少回声重叠） */
 function dualAlongLongAxis(room: Room): { x: number; y: number }[] {
   const L = room.length
   const W = room.width
@@ -490,8 +514,12 @@ export function coverageRadiusForArea(area: number): number {
   return Math.min(5, Math.max(2.5, Math.sqrt(area) * 0.45))
 }
 
-export function coverageRadiusForRoom(room: Room): number {
-  return Math.min(5.5, Math.max(2.5, cornerDistance(room)))
+/**
+ * 示意覆盖半径 = 产品最佳收音 3 m，全屋每机同一尺寸（与房间大小无关）。
+ * 最远 5 m 不画进示意，避免与「最佳」混淆；个数规则仍用 5 m 作加机门槛。
+ */
+export function coverageRadiusForRoom(_room?: Room, _deviceCount?: number): number {
+  return COVER_BEST_M
 }
 
 export function computePlacements(rooms: Room[], markers: Marker[]): DevicePlacement[] {
@@ -500,7 +528,7 @@ export function computePlacements(rooms: Room[], markers: Marker[]): DevicePlace
 
   for (const room of covered) {
     const { bases, applyHotspotOffset } = resolveRoomBases(room, markers)
-    const radius = coverageRadiusForRoom(room)
+    const radius = coverageRadiusForRoom(room, bases.length)
 
     bases.forEach((base, i) => {
       const placed = applyHotspotOffset
