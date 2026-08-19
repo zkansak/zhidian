@@ -1,7 +1,7 @@
 import {
   PX_PER_M,
+  deviceInstallLines,
   deviceWallRefs,
-  dimGeometry,
   roomNameTagPos,
 } from './placement'
 import type { DevicePlacement, Marker, Room } from '../types'
@@ -12,6 +12,7 @@ const ACCENT = '#0c7c72'
 const ACCENT_DEEP = '#085c55'
 const STROKE = '#1c2a33'
 const MARKER = '#c45e38'
+const LINE = 'rgba(19, 32, 41, 0.1)'
 const FONT = '"Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif'
 
 function stamp(): string {
@@ -30,8 +31,15 @@ function drawDim(
   vertical: boolean,
   layer: 'line' | 'label',
 ) {
-  const g = dimGeometry(x1, y1, x2, y2, vertical)
-  if (!g) return
+  const len = Math.hypot(x2 - x1, y2 - y1)
+  if (len < 18) return
+  const ux = (x2 - x1) / len
+  const uy = (y2 - y1) / len
+  const gap = 12
+  const ex = x2 - ux * gap
+  const ey = y2 - uy * gap
+  const tx = -uy * 5
+  const ty = ux * 5
 
   if (layer === 'line') {
     ctx.strokeStyle = ACCENT
@@ -39,15 +47,17 @@ function drawDim(
     ctx.lineCap = 'square'
     ctx.beginPath()
     ctx.moveTo(x1, y1)
-    ctx.lineTo(g.ex, g.ey)
-    ctx.moveTo(x1 - g.tx, y1 - g.ty)
-    ctx.lineTo(x1 + g.tx, y1 + g.ty)
-    ctx.moveTo(g.ex - g.tx, g.ey - g.ty)
-    ctx.lineTo(g.ex + g.tx, g.ey + g.ty)
+    ctx.lineTo(ex, ey)
+    ctx.moveTo(x1 - tx, y1 - ty)
+    ctx.lineTo(x1 + tx, y1 + ty)
+    ctx.moveTo(ex - tx, ey - ty)
+    ctx.lineTo(ex + tx, ey + ty)
     ctx.stroke()
     return
   }
 
+  const mx = (x1 + ex) / 2 + (vertical ? -14 : 0)
+  const my = (y1 + ey) / 2 + (vertical ? 0 : -10)
   ctx.font = `600 12px ${FONT}`
   const tw = ctx.measureText(label).width + 10
   const th = 16
@@ -55,13 +65,26 @@ function drawDim(
   ctx.strokeStyle = 'rgba(12, 124, 114, 0.18)'
   ctx.lineWidth = 1
   ctx.beginPath()
-  ctx.roundRect(g.mx - tw / 2, g.my - th / 2, tw, th, 3)
+  ctx.roundRect(mx - tw / 2, my - th / 2, tw, th, 3)
   ctx.fill()
   ctx.stroke()
   ctx.fillStyle = ACCENT_DEEP
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(label, g.mx, g.my)
+  ctx.fillText(label, mx, my)
+}
+
+function orderedDevices(rooms: Room[], devices: DevicePlacement[]): DevicePlacement[] {
+  const out: DevicePlacement[] = []
+  for (const r of rooms) {
+    for (const d of devices) {
+      if (d.roomId === r.id) out.push(d)
+    }
+  }
+  for (const d of devices) {
+    if (!out.includes(d)) out.push(d)
+  }
+  return out
 }
 
 export async function downloadSchemePng(
@@ -75,6 +98,13 @@ export async function downloadSchemePng(
   const scale = 2
   const margin = 40
   const header = 52
+  const notePad = 22
+  const noteLineH = 22
+  const noteTitleH = 28
+  const listed = orderedDevices(rooms, devices)
+  const footerH =
+    listed.length > 0 ? notePad * 2 + noteTitleH + listed.length * noteLineH : 0
+
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -92,7 +122,8 @@ export async function downloadSchemePng(
   const contentW = Math.max(320, maxX - minX)
   const contentH = Math.max(220, maxY - minY)
   const width = contentW + margin * 2
-  const height = contentH + margin * 2 + header
+  const planBottom = header + margin + contentH + margin
+  const height = planBottom + footerH
 
   const canvas = document.createElement('canvas')
   canvas.width = Math.ceil(width * scale)
@@ -118,7 +149,7 @@ export async function downloadSchemePng(
   ctx.fillStyle = INK_SOFT
   ctx.font = `400 12px ${FONT}`
   ctx.textAlign = 'right'
-  ctx.fillText('数字为距最近墙的安装距离', width - 18, header / 2)
+  ctx.fillText('图上为墙距；下方注释对照标号', width - 18, header / 2)
 
   ctx.save()
   ctx.translate(margin - minX, header + margin - minY)
@@ -140,7 +171,7 @@ export async function downloadSchemePng(
     ctx.fill()
   }
 
-  for (const d of devices) {
+  for (const d of listed) {
     const room = rooms.find((r) => r.id === d.roomId)
     if (!room) continue
     const refs = deviceWallRefs(room, d.x, d.y)
@@ -148,17 +179,23 @@ export async function downloadSchemePng(
     drawDim(ctx, refs.v.x1, refs.v.y1, refs.v.x2, refs.v.y2, `${refs.v.meters.toFixed(1)} m`, true, 'line')
   }
 
-  for (const d of devices) {
+  listed.forEach((d, i) => {
+    const n = i + 1
     ctx.beginPath()
-    ctx.arc(d.x, d.y, 8, 0, Math.PI * 2)
+    ctx.arc(d.x, d.y, 10, 0, Math.PI * 2)
     ctx.fillStyle = ACCENT
     ctx.fill()
-    ctx.lineWidth = 2.25
+    ctx.lineWidth = 2
     ctx.strokeStyle = '#fff'
     ctx.stroke()
-  }
+    ctx.fillStyle = '#fff'
+    ctx.font = `600 ${n > 9 ? 10 : 11}px ${FONT}`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(n), d.x, d.y + 0.5)
+  })
 
-  for (const d of devices) {
+  for (const d of listed) {
     const room = rooms.find((r) => r.id === d.roomId)
     if (!room) continue
     const refs = deviceWallRefs(room, d.x, d.y)
@@ -184,6 +221,49 @@ export async function downloadSchemePng(
   }
 
   ctx.restore()
+
+  if (listed.length > 0) {
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, planBottom, width, footerH)
+    ctx.strokeStyle = LINE
+    ctx.beginPath()
+    ctx.moveTo(0, planBottom)
+    ctx.lineTo(width, planBottom)
+    ctx.stroke()
+
+    let y = planBottom + notePad + 8
+    ctx.fillStyle = INK
+    ctx.font = `600 13px ${FONT}`
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('安装注释', margin, y)
+    y += noteTitleH
+
+    listed.forEach((d, i) => {
+      const n = i + 1
+      const room = rooms.find((r) => r.id === d.roomId)
+      const name = room?.name ?? '房间'
+      const lines = room
+        ? deviceInstallLines(room, d.x, d.y, markers, d.originX, d.originY)
+        : { h: '', v: '', note: '' }
+
+      ctx.beginPath()
+      ctx.arc(margin + 9, y, 9, 0, Math.PI * 2)
+      ctx.fillStyle = ACCENT
+      ctx.fill()
+      ctx.fillStyle = '#fff'
+      ctx.font = `600 ${n > 9 ? 9 : 11}px ${FONT}`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(String(n), margin + 9, y + 0.5)
+
+      ctx.fillStyle = INK
+      ctx.font = `400 13px ${FONT}`
+      ctx.textAlign = 'left'
+      ctx.fillText(`${name} · ${lines.h}，${lines.v}`, margin + 24, y)
+      y += noteLineH
+    })
+  }
 
   await new Promise<void>((resolve) => {
     canvas.toBlob((blob) => {
